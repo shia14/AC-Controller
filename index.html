@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#14181c">
+<title>AC Controller</title>
+<style>
+:root{
+  --asphalt:#14181c; --panel:#1d2329; --line:#2b333b; --chalk:#eee9df; --dim:#8b949c;
+  --kerb:#d7352b; --amber:#ffb400; --teal:#5fd0b0;
+  --num:"DIN Condensed","Avenir Next Condensed","Arial Narrow",system-ui,sans-serif;
+  --ui:system-ui,-apple-system,"SF Pro Text",sans-serif;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
+html,body{margin:0;height:100%;background:var(--asphalt);color:var(--chalk);font-family:var(--ui);overflow:hidden;overscroll-behavior:none;touch-action:none}
+button{font:inherit;color:inherit;border:1px solid var(--line);background:var(--panel);border-radius:14px;touch-action:none;padding:0}
+button.on{background:var(--chalk);color:var(--asphalt)}
+
+#app{position:fixed;inset:0;display:grid;grid-template-columns:24% 1fr 24%;gap:10px;
+  padding:max(10px,env(safe-area-inset-top)) max(10px,env(safe-area-inset-right)) max(10px,env(safe-area-inset-bottom)) max(10px,env(safe-area-inset-left))}
+.col{display:flex;flex-direction:column;gap:10px;min-height:0}
+.shift{flex:0 0 21%;font-size:clamp(14px,3.6vh,20px);font-weight:700}
+.shift.on{background:var(--amber);color:var(--asphalt);border-color:var(--amber)}
+
+.pedal{position:relative;flex:1;border-radius:20px;background:var(--panel);border:1px solid var(--line);overflow:hidden;touch-action:none;--v:0}
+.pedal::before{content:"";position:absolute;inset:0;background:var(--c);transform:scaleY(var(--v));transform-origin:bottom}
+.pedal span{position:absolute;left:0;right:0;top:12px;text-align:center;font-weight:700;font-size:clamp(13px,3vh,18px);color:var(--chalk);opacity:.7}
+#brk{--c:var(--kerb)} #thr{--c:var(--teal)}
+
+.center{display:flex;flex-direction:column;gap:8px;min-height:0}
+.top{display:flex;justify-content:space-between;align-items:baseline;font-size:clamp(11px,2.6vh,14px);color:var(--dim);gap:8px;white-space:nowrap}
+.top b{font-family:var(--num);font-weight:700;font-size:clamp(16px,4.2vh,24px);color:var(--chalk);letter-spacing:.02em}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--kerb);margin-right:6px;vertical-align:1px}
+.dot.on{background:var(--teal)}
+.main{flex:1;min-height:0;display:flex;align-items:center;justify-content:space-around}
+.speed{font-family:var(--num);font-weight:700;font-size:clamp(64px,26vh,150px);line-height:.9;font-variant-numeric:tabular-nums;min-width:2.2ch;text-align:right}
+.unit{font-size:clamp(12px,3vh,16px);color:var(--dim);font-family:var(--ui);display:block;text-align:right;margin-top:4px}
+.gear{font-family:var(--num);font-weight:700;font-size:clamp(80px,36vh,210px);line-height:.85;color:var(--amber);min-width:1ch;text-align:center}
+
+#rpm{display:flex;gap:3px;height:clamp(18px,7vh,34px)}
+.seg{flex:1;border-radius:3px;background:var(--panel);border:1px solid var(--line)}
+.seg.on{background:var(--chalk);border-color:var(--chalk)}
+.seg.on.hi{background:var(--amber);border-color:var(--amber)}
+.seg.on.max{background:var(--kerb);border-color:var(--kerb)}
+#rpm.lim .seg{animation:blink .14s steps(2) infinite;background:var(--amber);border-color:var(--amber)}
+@keyframes blink{50%{opacity:.15}}
+@media (prefers-reduced-motion:reduce){#rpm.lim .seg{animation:none}}
+
+.steer{position:relative;height:10px;border-radius:5px;background:var(--panel);border:1px solid var(--line)}
+.steer::after{content:"";position:absolute;left:50%;top:-3px;bottom:-3px;width:2px;background:var(--dim)}
+#sf{position:absolute;top:0;bottom:0;background:var(--teal);border-radius:5px}
+#sr{position:absolute;top:-3px;bottom:-3px;width:3px;margin-left:-1px;background:var(--chalk);border-radius:2px}
+
+.flags{display:flex;gap:6px;align-items:center;font-size:clamp(11px,2.8vh,15px);font-weight:700}
+.flag{padding:3px 9px;border-radius:8px;background:var(--panel);color:var(--dim);border:1px solid var(--line)}
+.flag.on{background:var(--amber);color:var(--asphalt);border-color:var(--amber)}
+.flags .sp{flex:1}
+.flags .g{color:var(--dim);font-weight:500}
+
+.aux{display:flex;gap:6px;height:clamp(34px,11vh,48px)}
+.aux button{flex:1;font-size:clamp(12px,3vh,16px);font-weight:600}
+
+/* overlays */
+.ov{position:fixed;inset:0;z-index:20;background:var(--asphalt);display:flex;align-items:center;justify-content:center;padding:24px;text-align:center}
+.ov.hide{display:none}
+#start h1{font-family:var(--num);font-size:44px;margin:0 0 6px;letter-spacing:.02em}
+#start p{color:var(--dim);margin:0 0 18px;max-width:34ch;line-height:1.4}
+#go{font-size:20px;font-weight:700;padding:14px 38px;background:var(--chalk);color:var(--asphalt);border-radius:16px}
+#err{color:var(--kerb);margin-top:14px;min-height:1.4em}
+#rotate{display:none;z-index:40;font-size:20px}
+@media (orientation:portrait){#rotate{display:flex}}
+
+#settings{z-index:30;align-items:flex-start;justify-content:center;overflow-y:auto;touch-action:pan-y;text-align:left}
+#settings .box{width:min(560px,100%);display:flex;flex-direction:column;gap:12px}
+#settings h2{font-family:var(--num);font-size:30px;margin:0}
+.srow{display:grid;grid-template-columns:1fr auto;gap:2px 12px;font-size:15px}
+.srow b{font-weight:600;color:var(--amber)}
+.srow input{grid-column:1/3;width:100%;touch-action:pan-y;accent-color:var(--amber)}
+.tgl{display:flex;gap:8px}.tgl button{flex:1;padding:12px;font-weight:600}
+#close{padding:14px;font-weight:700;background:var(--chalk);color:var(--asphalt)}
+.note{color:var(--dim);font-size:13px;line-height:1.4;margin:0}
+</style>
+</head>
+<body>
+
+<div id="app">
+  <div class="col">
+    <button class="shift" data-bit="1">Shift down</button>
+    <div class="pedal" id="brk"><span>Brake</span></div>
+  </div>
+
+  <div class="center">
+    <div class="top">
+      <span><i class="dot" id="link"></i><span id="rtt">offline</span></span>
+      <span>Lap <b id="lt">–:––.–––</b></span>
+      <span>Last <b id="ll">–:––.–––</b></span>
+      <span>Best <b id="bl">–:––.–––</b></span>
+    </div>
+    <div class="main">
+      <div><div class="speed" id="spd">0</div><span class="unit">km/h</span></div>
+      <div class="gear" id="gear">N</div>
+    </div>
+    <div id="rpm"></div>
+    <div class="steer"><div id="sf"></div><div id="sr"></div></div>
+    <div class="flags">
+      <span class="flag" id="fab">ABS</span><span class="flag" id="ftc">TC</span>
+      <span class="flag" id="flim">Limiter</span><span class="flag" id="fpit">Pit</span>
+      <span class="sp"></span><span class="g" id="lat">0.0 g</span>
+    </div>
+    <div class="aux">
+      <button id="cal">Centre</button>
+      <button data-bit="2">Pit limiter</button>
+      <button data-bit="3">Lights</button>
+      <button data-bit="4">View</button>
+      <button id="gear-btn">Settings</button>
+    </div>
+  </div>
+
+  <div class="col">
+    <button class="shift" data-bit="0">Shift up</button>
+    <div class="pedal" id="thr"><span>Throttle</span></div>
+  </div>
+</div>
+
+<!-- hidden iOS switch: toggling it produces a haptic tick on iOS 17.4+ -->
+<label id="hlabel" style="position:fixed;left:-200px;top:0;opacity:0;pointer-events:none"><input type="checkbox" switch id="hsw"></label>
+
+<div id="start" class="ov">
+  <div>
+    <h1>AC Controller</h1>
+    <p>Hold the phone like a steering wheel, in landscape. Tap start, then hold it straight and tap Centre.</p>
+    <button id="go">Start</button>
+    <div id="err"></div>
+  </div>
+</div>
+
+<div id="settings" class="ov hide">
+  <div class="box">
+    <h2>Settings</h2>
+    <div id="sliders" style="display:flex;flex-direction:column;gap:12px"></div>
+    <div class="tgl"><button id="tInvert"></button><button id="tHaptics"></button></div>
+    <p class="note">Steering direction wrong? Flip it with the first toggle, then tap Centre. Haptics need iOS 17.4 or newer. Assist sliders change the receiver live.</p>
+    <button id="close">Done</button>
+  </div>
+</div>
+
+<div id="rotate" class="ov">Rotate the phone to landscape</div>
+
+<script>
+(() => {
+const $ = s => document.querySelector(s);
+const clamp = (x, a, b) => x < a ? a : x > b ? b : x;
+
+// ---------- settings ----------
+const DEF = {lock:50, invert:false, haptics:true, expo:.25, speedSens:.35, smooth:15, ramp:6, tc:.6, abs:.6};
+const cfg = {...DEF};
+try { Object.assign(cfg, JSON.parse(localStorage.getItem('acpc') || '{}')); } catch (e) {}
+const saveCfg = () => { try { localStorage.setItem('acpc', JSON.stringify(cfg)); } catch (e) {} };
+const SERVER_KEYS = ['expo','speedSens','smooth','ramp','tc','abs'];
+const SLIDERS = [
+  ['lock','Steering lock (± degrees of tilt)',20,120,1],
+  ['expo','Soft centre',0,1,.05],
+  ['speedSens','Speed-sensitive steering',0,1,.05],
+  ['smooth','Steering smoothing (ms)',0,60,1],
+  ['ramp','Throttle ramp (full pedal per second)',1,20,.5],
+  ['tc','Traction assist',0,1,.05],
+  ['abs','Anti-lock assist',0,1,.05],
+];
+
+// ---------- state ----------
+const st = {steer:0, thr:0, brk:0, btn:0};
+let ws = null, rtt = 0, center = null, raw = 0, hz = 0, lastTick = 0, outSteer = 0;
+
+// ---------- RPM lights ----------
+const N = 16, rpmEl = $('#rpm'), segs = [];
+for (let i = 0; i < N; i++) {
+  const s = document.createElement('div');
+  s.className = 'seg' + (i >= N * .75 ? ' hi' : '') + (i >= N * .9 ? ' max' : '');
+  rpmEl.appendChild(s); segs.push(s);
+}
+
+// ---------- haptics ----------
+function tick() {
+  if (!cfg.haptics) return;
+  if (navigator.vibrate) navigator.vibrate(12);
+  $('#hlabel').click();
+}
+function pulse(now) {
+  if (hz < .12) return;
+  const gap = 150 - 110 * Math.min(1, hz);
+  if (now - lastTick >= gap) { lastTick = now; tick(); }
+}
+
+// ---------- network ----------
+function send() {
+  if (!ws || ws.readyState !== 1 || ws.bufferedAmount > 2048) return;
+  ws.send(`[${st.steer.toFixed(4)},${st.thr.toFixed(3)},${st.brk.toFixed(3)},${st.btn}]`);
+}
+function sendCfg() {
+  if (!ws || ws.readyState !== 1) return;
+  ws.send(JSON.stringify({cfg: Object.fromEntries(SERVER_KEYS.map(k => [k, cfg[k]]))}));
+}
+function connect() {
+  ws = new WebSocket(`wss://${location.host}/ws`);
+  ws.onopen = () => { sendCfg(); };
+  ws.onclose = () => { $('#link').classList.remove('on'); $('#rtt').textContent = 'offline'; hz = 0; setTimeout(connect, 1000); };
+  ws.onmessage = onMsg;
+}
+const fmt = ms => {
+  if (!ms || ms <= 0) return '–:––.–––';
+  const m = Math.floor(ms / 60000), s = (ms % 60000) / 1000;
+  return m + ':' + s.toFixed(3).padStart(6, '0');
+};
+function onMsg(ev) {
+  let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
+  if (m.pong !== undefined) {
+    const r = performance.now() - m.pong;
+    rtt = rtt ? rtt * .8 + r * .2 : r;
+    $('#rtt').textContent = rtt.toFixed(0) + ' ms';
+    $('#link').classList.add('on');
+    return;
+  }
+  outSteer = m.so || 0;
+  hz = m.live ? (m.hz || 0) : 0;
+  if (m.ev && m.ev.includes('shift')) tick();
+  if (!m.live) { $('#spd').textContent = '0'; $('#gear').textContent = 'N'; segs.forEach(s => s.classList.remove('on')); return; }
+  $('#spd').textContent = Math.round(m.v);
+  $('#gear').textContent = m.g;
+  const n = Math.round(clamp(m.rpm / m.mx, 0, 1) * N);
+  segs.forEach((s, i) => s.classList.toggle('on', i < n));
+  rpmEl.classList.toggle('lim', !!m.lim);
+  $('#fab').classList.toggle('on', !!m.ab);
+  $('#ftc').classList.toggle('on', !!m.tc);
+  $('#flim').classList.toggle('on', !!m.lim);
+  $('#fpit').classList.toggle('on', !!m.pit);
+  $('#lt').textContent = fmt(m.lt); $('#ll').textContent = fmt(m.ll); $('#bl').textContent = fmt(m.bl);
+  $('#lat').textContent = Math.abs(m.gl).toFixed(1) + ' g';
+}
+
+// ---------- steering (tilt) ----------
+function onMotion(e) {
+  const g = e.accelerationIncludingGravity;
+  if (!g || g.x == null || g.y == null) return;
+  raw = Math.atan2(g.x, g.y) * 180 / Math.PI;     // roll of the screen plane, any landscape direction
+  if (center === null) center = raw;
+  let d = ((raw - center + 540) % 360) - 180;
+  if (cfg.invert) d = -d;
+  st.steer = clamp(d / cfg.lock, -1, 1);
+  send();
+}
+
+// ---------- pedals ----------
+function pedal(el, key) {
+  let pid = null;
+  const set = e => {
+    const r = el.getBoundingClientRect();
+    const v = clamp(1 - (e.clientY - r.top) / r.height, 0, 1);
+    st[key] = v; el.style.setProperty('--v', v.toFixed(3));
+    send(); pulse(performance.now());
+  };
+  el.addEventListener('pointerdown', e => { if (pid !== null) return; e.preventDefault(); pid = e.pointerId; el.setPointerCapture(pid); set(e); });
+  el.addEventListener('pointermove', e => { if (e.pointerId === pid) set(e); });
+  const end = e => { if (e.pointerId !== pid) return; pid = null; st[key] = 0; el.style.setProperty('--v', 0); send(); };
+  el.addEventListener('pointerup', end); el.addEventListener('pointercancel', end);
+}
+pedal($('#brk'), 'brk'); pedal($('#thr'), 'thr');
+
+// ---------- buttons ----------
+document.querySelectorAll('[data-bit]').forEach(b => {
+  const n = +b.dataset.bit, bit = 1 << n;
+  b.addEventListener('pointerdown', e => {
+    e.preventDefault(); b.setPointerCapture(e.pointerId);
+    st.btn |= bit; b.classList.add('on'); if (n < 2) tick(); send();
+  });
+  const up = () => { b.classList.remove('on'); setTimeout(() => { st.btn &= ~bit; send(); }, 50); };  // hold 50 ms so AC never misses a tap
+  b.addEventListener('pointerup', up); b.addEventListener('pointercancel', up);
+});
+$('#cal').addEventListener('click', () => { center = raw; });
+
+// ---------- settings UI ----------
+const box = $('#sliders');
+SLIDERS.forEach(([k, label, min, max, step]) => {
+  const row = document.createElement('label'); row.className = 'srow';
+  row.innerHTML = `<span>${label}</span><b></b><input type="range" min="${min}" max="${max}" step="${step}">`;
+  const inp = row.querySelector('input'), out = row.querySelector('b');
+  inp.value = cfg[k]; out.textContent = cfg[k];
+  inp.oninput = () => { cfg[k] = +inp.value; out.textContent = cfg[k]; saveCfg(); if (SERVER_KEYS.includes(k)) sendCfg(); };
+  box.appendChild(row);
+});
+const paintToggles = () => {
+  $('#tInvert').textContent = 'Reverse steering: ' + (cfg.invert ? 'on' : 'off');
+  $('#tHaptics').textContent = 'Haptics: ' + (cfg.haptics ? 'on' : 'off');
+};
+$('#tInvert').onclick = () => { cfg.invert = !cfg.invert; saveCfg(); paintToggles(); };
+$('#tHaptics').onclick = () => { cfg.haptics = !cfg.haptics; saveCfg(); paintToggles(); tick(); };
+$('#gear-btn').onclick = () => $('#settings').classList.remove('hide');
+$('#close').onclick = () => $('#settings').classList.add('hide');
+paintToggles();
+
+// ---------- start ----------
+$('#go').onclick = async () => {
+  $('#err').textContent = '';
+  try {
+    if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
+      if (await DeviceMotionEvent.requestPermission() !== 'granted') throw new Error('Motion access was denied. Allow it in Safari settings and reload.');
+    }
+    addEventListener('devicemotion', onMotion);
+    try { await navigator.wakeLock.request('screen'); } catch (e) {}
+    tick();                                   // a tap is a user gesture: also warms up the haptic engine
+    connect();
+    $('#start').classList.add('hide');
+  } catch (e) { $('#err').textContent = e.message; }
+};
+document.addEventListener('visibilitychange', async () => {
+  if (!document.hidden) { try { await navigator.wakeLock.request('screen'); } catch (e) {} }
+});
+['gesturestart', 'contextmenu'].forEach(t => addEventListener(t, e => e.preventDefault()));
+
+// ---------- loops ----------
+setInterval(send, 50);                       // keep-alive: the receiver zeroes the pad if this stops
+setInterval(() => { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ping: performance.now()})); }, 1000);
+(function frame(now) {
+  requestAnimationFrame(frame);
+  pulse(now);
+  const o = clamp(outSteer, -1, 1);
+  const f = $('#sf'); f.style.left = (o < 0 ? 50 + o * 50 : 50) + '%'; f.style.width = Math.abs(o) * 50 + '%';
+  $('#sr').style.left = (50 + st.steer * 50) + '%';
+})(0);
+})();
+</script>
+</body>
+</html>
