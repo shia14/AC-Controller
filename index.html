@@ -156,13 +156,14 @@ const $ = s => document.querySelector(s);
 const clamp = (x, a, b) => x < a ? a : x > b ? b : x;
 
 // ---------- settings ----------
-const DEF = {lock:50, invert:false, haptics:true, expo:.25, speedSens:.35, smooth:15, ramp:6, tc:.6, abs:.6};
+const DEF = {lock:50, invert:false, haptics:true, fMin:6, expo:.25, speedSens:.35, smooth:5, ramp:6, tc:.6, abs:.6};
 const cfg = {...DEF};
 try { Object.assign(cfg, JSON.parse(localStorage.getItem('acpc') || '{}')); } catch (e) {}
 const saveCfg = () => { try { localStorage.setItem('acpc', JSON.stringify(cfg)); } catch (e) {} };
 const SERVER_KEYS = ['expo','speedSens','smooth','ramp','tc','abs'];
 const SLIDERS = [
   ['lock','Steering lock (± degrees of tilt)',20,120,1],
+  ['fMin','Steering response (higher = faster, less filtering)',.5,10,.5],
   ['expo','Soft centre',0,1,.05],
   ['speedSens','Speed-sensitive steering',0,1,.05],
   ['smooth','Steering smoothing (ms)',0,60,1],
@@ -173,7 +174,7 @@ const SLIDERS = [
 
 // ---------- state ----------
 const st = {steer:0, thr:0, brk:0, btn:0};
-let ws = null, rtt = 0, center = null, raw = 0, hz = 0, lastTick = 0, outSteer = 0;
+let ws = null, gp = 0, lastPong = 0, rtt = 0, center = null, raw = 0, hz = 0, lastTick = 0, outSteer = 0;
 
 // ---------- RPM lights ----------
 const N = 16, rpmEl = $('#rpm'), segs = [];
@@ -206,8 +207,8 @@ function sendCfg() {
 }
 function connect() {
   ws = new WebSocket(`wss://${location.host}/ws`);
-  ws.onopen = () => { sendCfg(); };
-  ws.onclose = () => { $('#link').classList.remove('on'); $('#rtt').textContent = 'offline'; hz = 0; setTimeout(connect, 1000); };
+  ws.onopen = () => { lastPong = performance.now(); sendCfg(); };
+  ws.onclose = () => { $('#link').classList.remove('on'); $('#rtt').textContent = 'offline'; hz = 0; setTimeout(connect, 500); };
   ws.onmessage = onMsg;
 }
 const fmt = ms => {
@@ -218,12 +219,14 @@ const fmt = ms => {
 function onMsg(ev) {
   let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
   if (m.pong !== undefined) {
+    lastPong = performance.now();
     const r = performance.now() - m.pong;
     rtt = rtt ? rtt * .8 + r * .2 : r;
-    $('#rtt').textContent = rtt.toFixed(0) + ' ms';
+    $('#rtt').textContent = rtt.toFixed(0) + ' ms, gap ' + gp;
     $('#link').classList.add('on');
     return;
   }
+  if (m.gp !== undefined) gp = m.gp;
   outSteer = m.so || 0;
   hz = m.live ? (m.hz || 0) : 0;
   if (m.ev && m.ev.includes('shift')) tick();
@@ -242,13 +245,29 @@ function onMsg(ev) {
 }
 
 // ---------- steering (tilt) ----------
+// One Euro filter: heavy smoothing while you hold still, almost none while you turn fast
+const oe = {x: null, dx: 0, t: 0};
+function oneEuro(x, t) {
+  if (oe.x === null) { oe.x = x; oe.t = t; return x; }
+  const dt = Math.max(.001, Math.min(.1, (t - oe.t) / 1000)); oe.t = t;
+  const a = c => 1 / (1 + (1 / (2 * Math.PI * c)) / dt);
+  oe.dx += a(1) * ((x - oe.x) / dt - oe.dx);
+  oe.x += a(cfg.fMin + .08 * Math.abs(oe.dx)) * (x - oe.x);
+  return oe.x;
+}
 function onMotion(e) {
   const g = e.accelerationIncludingGravity;
   if (!g || g.x == null || g.y == null) return;
+  let mag = Math.hypot(g.x, g.y, g.z || 0);
+  const k = mag < 3 ? 9.81 : 1;                    // some browsers report in g instead of m/s²
+  mag *= k;
+  const inplane = Math.hypot(g.x, g.y) * k;
+  if (inplane < 3 || Math.abs(mag - 9.81) > 9) return;   // only drop phone-flat or violent jolts
   raw = Math.atan2(g.x, g.y) * 180 / Math.PI;     // roll of the screen plane, any landscape direction
   if (center === null) center = raw;
   let d = ((raw - center + 540) % 360) - 180;
   if (cfg.invert) d = -d;
+  d = oneEuro(d, performance.now());
   st.steer = clamp(d / cfg.lock, -1, 1);
   send();
 }
@@ -279,7 +298,7 @@ document.querySelectorAll('[data-bit]').forEach(b => {
   const up = () => { b.classList.remove('on'); setTimeout(() => { st.btn &= ~bit; send(); }, 50); };  // hold 50 ms so AC never misses a tap
   b.addEventListener('pointerup', up); b.addEventListener('pointercancel', up);
 });
-$('#cal').addEventListener('click', () => { center = raw; });
+$('#cal').addEventListener('click', () => { center = raw; oe.x = null; });
 
 // ---------- settings UI ----------
 const box = $('#sliders');
@@ -321,6 +340,13 @@ document.addEventListener('visibilitychange', async () => {
 ['gesturestart', 'contextmenu'].forEach(t => addEventListener(t, e => e.preventDefault()));
 
 // ---------- loops ----------
+// a dead connection (Wi-Fi blip) can look open for a long time: if pings stop coming back, start over
+setInterval(() => {
+  if (ws && ws.readyState === 1 && lastPong && performance.now() - lastPong > 3000) {
+    try { ws.onclose = null; ws.close(); } catch (e) {}
+    $('#link').classList.remove('on'); $('#rtt').textContent = 'reconnecting'; hz = 0; lastPong = 0; connect();
+  }
+}, 1000);
 setInterval(send, 50);                       // keep-alive: the receiver zeroes the pad if this stops
 setInterval(() => { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ping: performance.now()})); }, 1000);
 (function frame(now) {

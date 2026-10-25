@@ -98,6 +98,8 @@ class Controller:
         self.last_gear = None
         self.events = []
         self.clients = set()
+        self._gmax, self._n, self._w0 = 0.0, 0, time.perf_counter()
+        self.gap_ms, self.rate = 0, 0
 
     # ---------------- phone -> pad ----------------
     def set_cfg(self, d):
@@ -110,7 +112,13 @@ class Controller:
         now = time.perf_counter()
         dt = clamp(now - self.t_prev, 0.001, 0.05)
         self.t_prev = now
-        self.last_input = now
+        prev, self.last_input = self.last_input, now
+        if prev:
+            self._gmax = max(self._gmax, now - prev)     # longest silence between phone packets
+        self._n += 1
+        if now - self._w0 >= 1.0:
+            self.gap_ms, self.rate = int(self._gmax * 1000), self._n
+            self._gmax, self._n, self._w0 = 0.0, 0, now
         c = self.cfg
         t = self.tel if (now - self.tel_time) < STALE_TELEMETRY else {}
         speed = t.get("v", 0.0)
@@ -196,7 +204,7 @@ class Controller:
 
     def snapshot(self):
         live = (time.perf_counter() - self.tel_time) < STALE_TELEMETRY
-        msg = {"live": live, "so": round(self.steer_f, 3)}
+        msg = {"live": live, "so": round(self.steer_f, 3), "gp": self.gap_ms, "rt": self.rate}
         if live:
             t = self.tel
             msg.update(
@@ -262,6 +270,10 @@ async def ws_handler(request):
     ctrl = request.app["ctrl"]
     ws = web.WebSocketResponse(compress=False, max_msg_size=4096)
     await ws.prepare(request)
+    try:   # send every packet immediately instead of letting TCP batch them
+        request.transport.get_extra_info("socket").setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    except Exception:
+        pass
     ctrl.clients.add(ws)
     try:
         async for msg in ws:
