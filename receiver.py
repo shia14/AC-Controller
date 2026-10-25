@@ -19,6 +19,7 @@ import math
 import socket
 import ssl
 import struct
+import threading
 import time
 from pathlib import Path
 
@@ -210,33 +211,50 @@ class Controller:
         return json.dumps(msg, separators=(",", ":"))
 
 
-class ACProtocol(asyncio.DatagramProtocol):
-    """Assetto Corsa remote telemetry: handshake, subscribe, then 328-byte updates."""
+class ACTelemetry(threading.Thread):
+    """Assetto Corsa remote telemetry on a plain blocking socket (reliable on Windows)."""
 
     def __init__(self, ctrl):
+        super().__init__(daemon=True)
         self.ctrl = ctrl
-        self.transport = None
 
-    def connection_made(self, transport):
-        self.transport = transport
-        self.handshake()
-
-    def handshake(self):
-        self.transport.sendto(struct.pack("<iii", 1, 1, 0), AC_ADDR)
-
-    def datagram_received(self, data, addr):
-        seen = self.__dict__.setdefault("seen", set())
-        if len(data) not in seen:
-            seen.add(len(data))
-            print(f"[AC telemetry] received a {len(data)}-byte packet from AC")
-        if len(data) == 328:
-            self.ctrl.on_telemetry(parse_rtcarinfo(data))
-        else:  # handshake response -> subscribe to updates
-            self.ctrl.max_rpm = 1000.0
-            self.transport.sendto(struct.pack("<iii", 1, 1, 1), AC_ADDR)
-
-    def error_received(self, exc):
-        pass  # AC not running yet (Windows reports ICMP port unreachable)
+    def run(self):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind(("127.0.0.1", 0))
+        sock.settimeout(0.5)
+        seen, last_hs, last_msg, warned = set(), 0.0, 0.0, False
+        while True:
+            now = time.perf_counter()
+            if now - self.ctrl.tel_time > 2.0:
+                if now - last_hs > 1.0:        # keep asking until AC answers
+                    last_hs = now
+                    try:
+                        sock.sendto(struct.pack("<iii", 1, 1, 0), AC_ADDR)
+                    except OSError:
+                        pass
+                if now - last_msg > 10.0:
+                    last_msg = now
+                    print("[AC telemetry] waiting for Assetto Corsa to answer on 127.0.0.1:9996 ...")
+            try:
+                data, _ = sock.recvfrom(2048)
+            except socket.timeout:
+                continue
+            except OSError:
+                time.sleep(0.05)               # Windows: "connection reset" while AC isn't listening yet
+                continue
+            try:
+                if len(data) not in seen:
+                    seen.add(len(data))
+                    print(f"[AC telemetry] received a {len(data)}-byte packet from AC")
+                if len(data) == 328:
+                    self.ctrl.on_telemetry(parse_rtcarinfo(data))
+                else:                          # handshake response -> subscribe to updates
+                    self.ctrl.max_rpm = 1000.0
+                    sock.sendto(struct.pack("<iii", 1, 1, 1), AC_ADDR)
+            except Exception as e:
+                if not warned:
+                    warned = True
+                    print("[AC telemetry] could not read a packet:", repr(e))
 
 
 # ---------------- HTTPS / WebSocket ----------------
@@ -278,15 +296,13 @@ async def sender(ctrl):
             await asyncio.gather(*(ws.send_str(s) for ws in list(ctrl.clients)), return_exceptions=True)
 
 
-async def watchdog(ctrl, proto):
+async def watchdog(ctrl):
     while True:
         await asyncio.sleep(0.2)
         now = time.perf_counter()
         if ctrl.last_input and now - ctrl.last_input > INPUT_TIMEOUT:
             ctrl.neutral()
             ctrl.last_input = 0.0
-        if now - ctrl.tel_time > 2.0 and int(now) % 2 == 0:
-            proto.handshake()  # (re)connect when AC starts or a session restarts
 
 
 # ---------------- certificate ----------------
@@ -348,8 +364,7 @@ async def run(args):
     ctx.load_cert_chain(str(HERE / "cert.pem"), str(HERE / "key.pem"))
 
     ctrl = Controller()
-    loop = asyncio.get_running_loop()
-    _, proto = await loop.create_datagram_endpoint(lambda: ACProtocol(ctrl), local_addr=("127.0.0.1", 0))
+    ACTelemetry(ctrl).start()
 
     app = web.Application()
     app["ctrl"] = ctrl
@@ -381,7 +396,7 @@ async def run(args):
             print(f"  https://{ip}:{args.port}      (certificate: http://{ip}:{args.http_port})")
     print("\nWaiting for the phone and Assetto Corsa. Ctrl+C to quit.")
 
-    tasks = [asyncio.create_task(sender(ctrl)), asyncio.create_task(watchdog(ctrl, proto))]
+    tasks = [asyncio.create_task(sender(ctrl)), asyncio.create_task(watchdog(ctrl))]
     try:
         await asyncio.Event().wait()
     finally:
