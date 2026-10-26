@@ -16,11 +16,14 @@
   --ui:system-ui,-apple-system,"SF Pro Text",sans-serif;
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
+html{-webkit-text-size-adjust:100%}
 html,body{margin:0;height:100%;background:var(--asphalt);color:var(--chalk);font-family:var(--ui);overflow:hidden;overscroll-behavior:none;touch-action:none}
 button{font:inherit;color:inherit;border:1px solid var(--line);background:var(--panel);border-radius:14px;touch-action:none;padding:0}
 button.on{background:var(--chalk);color:var(--asphalt)}
 
-#app{position:fixed;inset:0;display:grid;grid-template-columns:24% 1fr 24%;gap:10px;
+#stage{position:fixed;left:0;top:0;width:100%;height:100%;overflow:hidden}
+#stage.rot #app{padding:10px 34px}
+#app{position:absolute;inset:0;display:grid;grid-template-columns:24% 1fr 24%;gap:10px;
   padding:max(10px,env(safe-area-inset-top)) max(10px,env(safe-area-inset-right)) max(10px,env(safe-area-inset-bottom)) max(10px,env(safe-area-inset-left))}
 .col{display:flex;flex-direction:column;gap:10px;min-height:0}
 .shift{flex:0 0 21%;font-size:clamp(14px,3.6vh,20px);font-weight:700}
@@ -65,14 +68,12 @@ button.on{background:var(--chalk);color:var(--asphalt)}
 .aux button{flex:1;font-size:clamp(12px,3vh,16px);font-weight:600}
 
 /* overlays */
-.ov{position:fixed;inset:0;z-index:20;background:var(--asphalt);display:flex;align-items:center;justify-content:center;padding:24px;text-align:center}
+.ov{position:absolute;inset:0;z-index:20;background:var(--asphalt);display:flex;align-items:center;justify-content:center;padding:24px;text-align:center}
 .ov.hide{display:none}
 #start h1{font-family:var(--num);font-size:44px;margin:0 0 6px;letter-spacing:.02em}
 #start p{color:var(--dim);margin:0 0 18px;max-width:34ch;line-height:1.4}
 #go{font-size:20px;font-weight:700;padding:14px 38px;background:var(--chalk);color:var(--asphalt);border-radius:16px}
 #err{color:var(--kerb);margin-top:14px;min-height:1.4em}
-#rotate{display:none;z-index:40;font-size:20px}
-@media (orientation:portrait){#rotate{display:flex}}
 
 #settings{z-index:30;align-items:flex-start;justify-content:center;overflow-y:auto;touch-action:pan-y;text-align:left}
 #settings .box{width:min(560px,100%);display:flex;flex-direction:column;gap:12px}
@@ -80,13 +81,14 @@ button.on{background:var(--chalk);color:var(--asphalt)}
 .srow{display:grid;grid-template-columns:1fr auto;gap:2px 12px;font-size:15px}
 .srow b{font-weight:600;color:var(--amber)}
 .srow input{grid-column:1/3;width:100%;touch-action:pan-y;accent-color:var(--amber)}
-.tgl{display:flex;gap:8px}.tgl button{flex:1;padding:12px;font-weight:600}
+.tgl{display:flex;flex-wrap:wrap;gap:8px}.tgl button{flex:1 1 45%;padding:12px;font-weight:600}
 #close{padding:14px;font-weight:700;background:var(--chalk);color:var(--asphalt)}
 .note{color:var(--dim);font-size:13px;line-height:1.4;margin:0}
 </style>
 </head>
 <body>
 
+<div id="stage">
 <div id="app">
   <div class="col">
     <button class="shift" data-bit="1">Shift down</button>
@@ -142,13 +144,13 @@ button.on{background:var(--chalk);color:var(--asphalt)}
   <div class="box">
     <h2>Settings</h2>
     <div id="sliders" style="display:flex;flex-direction:column;gap:12px"></div>
-    <div class="tgl"><button id="tInvert"></button><button id="tHaptics"></button></div>
-    <p class="note">Steering direction wrong? Flip it with the first toggle, then tap Centre. Haptics need iOS 17.4 or newer. Assist sliders change the receiver live.</p>
+    <div class="tgl"><button id="tInvert"></button><button id="tHaptics"></button><button id="tFused"></button><button id="tFlip"></button></div>
+    <p class="note">Steering direction wrong? Flip it with the first toggle, then tap Centre. Screen upside down? Use the Layout toggle. Haptics need iOS 17.4 or newer. Assist sliders change the receiver live.</p>
     <button id="close">Done</button>
   </div>
 </div>
 
-<div id="rotate" class="ov">Rotate the phone to landscape</div>
+</div><!-- /stage -->
 
 <script>
 (() => {
@@ -156,7 +158,7 @@ const $ = s => document.querySelector(s);
 const clamp = (x, a, b) => x < a ? a : x > b ? b : x;
 
 // ---------- settings ----------
-const DEF = {lock:50, invert:false, haptics:true, fMin:6, expo:.25, speedSens:.35, smooth:5, ramp:6, tc:.6, abs:.6};
+const DEF = {lock:50, invert:false, haptics:true, fused:true, flip:false, fMin:6, expo:.25, speedSens:.15, smooth:5, ramp:6, tc:.6, abs:.6};
 const cfg = {...DEF};
 try { Object.assign(cfg, JSON.parse(localStorage.getItem('acpc') || '{}')); } catch (e) {}
 const saveCfg = () => { try { localStorage.setItem('acpc', JSON.stringify(cfg)); } catch (e) {} };
@@ -174,7 +176,7 @@ const SLIDERS = [
 
 // ---------- state ----------
 const st = {steer:0, thr:0, brk:0, btn:0};
-let ws = null, gp = 0, lastPong = 0, rtt = 0, center = null, raw = 0, hz = 0, lastTick = 0, outSteer = 0;
+let uiRot = 0, lastLandscape = 90, ws = null, gp = 0, lastPong = 0, rtt = 0, center = null, raw = 0, hz = 0, lastTick = 0, outSteer = 0;
 
 // ---------- RPM lights ----------
 const N = 16, rpmEl = $('#rpm'), segs = [];
@@ -255,15 +257,9 @@ function oneEuro(x, t) {
   oe.x += a(cfg.fMin + .08 * Math.abs(oe.dx)) * (x - oe.x);
   return oe.x;
 }
-function onMotion(e) {
-  const g = e.accelerationIncludingGravity;
-  if (!g || g.x == null || g.y == null) return;
-  let mag = Math.hypot(g.x, g.y, g.z || 0);
-  const k = mag < 3 ? 9.81 : 1;                    // some browsers report in g instead of m/s²
-  mag *= k;
-  const inplane = Math.hypot(g.x, g.y) * k;
-  if (inplane < 3 || Math.abs(mag - 9.81) > 9) return;   // only drop phone-flat or violent jolts
-  raw = Math.atan2(g.x, g.y) * 180 / Math.PI;     // roll of the screen plane, any landscape direction
+let lastSrc = '', fusedAt = 0;
+function applyAngle(src) {
+  if (src !== lastSrc) { lastSrc = src; center = null; oe.x = null; }   // the two sensors differ by a fixed offset: re-centre on a switch
   if (center === null) center = raw;
   let d = ((raw - center + 540) % 360) - 180;
   if (cfg.invert) d = -d;
@@ -271,13 +267,40 @@ function onMotion(e) {
   st.steer = clamp(d / cfg.lock, -1, 1);
   send();
 }
+// Apple's fused orientation (gyro + accelerometer, hand-shake removed). The roll of the screen
+// is rebuilt from the rotation matrix, so it has no gimbal lock when the phone is held upright.
+function onOrient(e) {
+  if (!cfg.fused || e.beta == null || e.gamma == null) return;
+  const b = e.beta * Math.PI / 180, g = e.gamma * Math.PI / 180;
+  const ux = -Math.cos(b) * Math.sin(g), uy = Math.sin(b);   // "up" direction in the phone's own axes
+  if (Math.hypot(ux, uy) < .3) return;                       // phone nearly flat: roll is undefined
+  fusedAt = performance.now();
+  raw = Math.atan2(ux, uy) * 180 / Math.PI;
+  applyAngle('fused');
+}
+// Plain accelerometer: used when fused orientation is off or isn't arriving
+function onMotion(e) {
+  if (cfg.fused && performance.now() - fusedAt < 250) return;
+  const g = e.accelerationIncludingGravity;
+  if (!g || g.x == null || g.y == null) return;
+  let mag = Math.hypot(g.x, g.y, g.z || 0);
+  const k = mag < 3 ? 9.81 : 1;                    // some browsers report in g instead of m/s²
+  mag *= k;
+  const inplane = Math.hypot(g.x, g.y) * k;
+  if (inplane < 3 || Math.abs(mag - 9.81) > 9) return;   // only drop phone-flat or violent jolts
+  raw = Math.atan2(g.x, g.y) * 180 / Math.PI;
+  applyAngle('accel');
+}
 
 // ---------- pedals ----------
 function pedal(el, key) {
   let pid = null;
   const set = e => {
     const r = el.getBoundingClientRect();
-    const v = clamp(1 - (e.clientY - r.top) / r.height, 0, 1);
+    const dx = e.clientX - (r.left + r.width / 2), dy = e.clientY - (r.top + r.height / 2);
+    const th = uiRot * Math.PI / 180;
+    const ly = -dx * Math.sin(th) + dy * Math.cos(th);      // distance along the pedal in its own (possibly rotated) axes
+    const v = clamp(.5 - ly / el.offsetHeight, 0, 1);
     st[key] = v; el.style.setProperty('--v', v.toFixed(3));
     send(); pulse(performance.now());
   };
@@ -313,8 +336,12 @@ SLIDERS.forEach(([k, label, min, max, step]) => {
 const paintToggles = () => {
   $('#tInvert').textContent = 'Reverse steering: ' + (cfg.invert ? 'on' : 'off');
   $('#tHaptics').textContent = 'Haptics: ' + (cfg.haptics ? 'on' : 'off');
+  $('#tFlip').textContent = 'Layout: ' + (cfg.flip ? 'flipped' : 'normal');
+  $('#tFused').textContent = 'Sensor: ' + (cfg.fused ? 'fused' : 'accelerometer');
 };
 $('#tInvert').onclick = () => { cfg.invert = !cfg.invert; saveCfg(); paintToggles(); };
+$('#tFlip').onclick = () => { cfg.flip = !cfg.flip; saveCfg(); paintToggles(); layout(); };
+$('#tFused').onclick = () => { cfg.fused = !cfg.fused; saveCfg(); paintToggles(); };
 $('#tHaptics').onclick = () => { cfg.haptics = !cfg.haptics; saveCfg(); paintToggles(); tick(); };
 $('#gear-btn').onclick = () => $('#settings').classList.remove('hide');
 $('#close').onclick = () => $('#settings').classList.add('hide');
@@ -324,10 +351,15 @@ paintToggles();
 $('#go').onclick = async () => {
   $('#err').textContent = '';
   try {
-    if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
-      if (await DeviceMotionEvent.requestPermission() !== 'granted') throw new Error('Motion access was denied. Allow it in Safari settings and reload.');
+    const asks = [];
+    if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') asks.push(DeviceMotionEvent.requestPermission());
+    if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') asks.push(DeviceOrientationEvent.requestPermission());
+    if (asks.length) {
+      const res = await Promise.allSettled(asks);
+      if (!res.some(r => r.status === 'fulfilled' && r.value === 'granted')) throw new Error('Motion access was denied. Allow it in Safari settings and reload.');
     }
     addEventListener('devicemotion', onMotion);
+    addEventListener('deviceorientation', onOrient);
     try { await navigator.wakeLock.request('screen'); } catch (e) {}
     tick();                                   // a tap is a user gesture: also warms up the haptic engine
     connect();
@@ -337,7 +369,29 @@ $('#go').onclick = async () => {
 document.addEventListener('visibilitychange', async () => {
   if (!document.hidden) { try { await navigator.wakeLock.request('screen'); } catch (e) {} }
 });
-['gesturestart', 'contextmenu'].forEach(t => addEventListener(t, e => e.preventDefault()));
+['gesturestart', 'gesturechange', 'gestureend', 'contextmenu', 'dblclick'].forEach(t => addEventListener(t, e => e.preventDefault()));
+document.addEventListener('touchmove', e => { if (e.scale && e.scale !== 1) e.preventDefault(); }, {passive: false});   // pinch
+let lastEnd = 0;
+document.addEventListener('touchend', e => { const n = Date.now(); if (n - lastEnd < 350) e.preventDefault(); lastEnd = n; }, {passive: false});   // double-tap
+
+// ---------- layout: always landscape, whatever iOS does ----------
+// Turning the phone like a wheel makes iOS flip the page to portrait. Instead of fighting it,
+// the whole UI is rotated back to landscape. The steering sensors use the phone's own axes, so they don't care.
+try { const s = +localStorage.getItem('acpc-land'); if (s === 90 || s === -90) lastLandscape = s; } catch (e) {}
+let lastCss = null;
+function layout() {
+  const o = window.orientation;
+  if (o === 90 || o === -90) { lastLandscape = o; try { localStorage.setItem('acpc-land', o); } catch (e) {} }
+  const w = innerWidth, h = innerHeight, stage = $('#stage');
+  let css = '';
+  if (w < h) {
+    uiRot = cfg.flip ? -lastLandscape : lastLandscape;
+    css = `width:${h}px;height:${w}px;left:50%;top:50%;transform:translate(-50%,-50%) rotate(${uiRot}deg)`;
+  } else uiRot = 0;
+  if (css !== lastCss) { lastCss = css; stage.style.cssText = css; stage.classList.toggle('rot', w < h); }
+}
+['resize', 'orientationchange'].forEach(t => addEventListener(t, layout));
+setInterval(layout, 500); layout();
 
 // ---------- loops ----------
 // a dead connection (Wi-Fi blip) can look open for a long time: if pings stop coming back, start over
