@@ -292,7 +292,8 @@ async def ws_handler(request):
                 continue
     finally:
         ctrl.clients.discard(ws)
-        ctrl.neutral()
+        if not ctrl.clients:
+            ctrl.neutral()
     return ws
 
 

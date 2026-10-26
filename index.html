@@ -55,8 +55,8 @@ button.on{background:var(--chalk);color:var(--asphalt)}
 
 .steer{position:relative;height:10px;border-radius:5px;background:var(--panel);border:1px solid var(--line)}
 .steer::after{content:"";position:absolute;left:50%;top:-3px;bottom:-3px;width:2px;background:var(--dim)}
-#sf{position:absolute;top:0;bottom:0;background:var(--teal);border-radius:5px}
-#sr{position:absolute;top:-3px;bottom:-3px;width:3px;margin-left:-1px;background:var(--chalk);border-radius:2px}
+#sf{position:absolute;top:0;bottom:0;left:50%;width:50%;transform-origin:0 50%;will-change:transform;background:var(--teal);border-radius:5px}
+#sr{position:absolute;top:-3px;bottom:-3px;left:50%;width:3px;margin-left:-1px;will-change:transform;background:var(--chalk);border-radius:2px}
 
 .flags{display:flex;gap:6px;align-items:center;font-size:clamp(11px,2.8vh,15px);font-weight:700}
 .flag{padding:3px 9px;border-radius:8px;background:var(--panel);color:var(--dim);border:1px solid var(--line)}
@@ -107,7 +107,7 @@ button.on{background:var(--chalk);color:var(--asphalt)}
       <div class="gear" id="gear">N</div>
     </div>
     <div id="rpm"></div>
-    <div class="steer"><div id="sf"></div><div id="sr"></div></div>
+    <div class="steer" id="bar"><div id="sf"></div><div id="sr"></div></div>
     <div class="flags">
       <span class="flag" id="fab">ABS</span><span class="flag" id="ftc">TC</span>
       <span class="flag" id="flim">Limiter</span><span class="flag" id="fpit">Pit</span>
@@ -154,7 +154,9 @@ button.on{background:var(--chalk);color:var(--asphalt)}
 
 <script>
 (() => {
-const $ = s => document.querySelector(s);
+const cache = {};
+const $ = s => cache[s] || (cache[s] = document.querySelector(s));   // look each element up once
+const txt = (s, v) => { const e = $(s); if (e._t !== v) { e._t = v; e.textContent = v; } };   // only touch the DOM when the text changed
 const clamp = (x, a, b) => x < a ? a : x > b ? b : x;
 
 // ---------- settings ----------
@@ -176,7 +178,7 @@ const SLIDERS = [
 
 // ---------- state ----------
 const st = {steer:0, thr:0, brk:0, btn:0};
-let uiRot = 0, lastLandscape = 90, ws = null, gp = 0, lastPong = 0, rtt = 0, center = null, raw = 0, hz = 0, lastTick = 0, outSteer = 0;
+let lastSample = 0, useAccel = false, lastSend = 0, dirty = false, half = 0, dOut = 0, dIn = 0, uiRot = 0, lastLandscape = 90, ws = null, gp = 0, lastPong = 0, rtt = 0, center = null, raw = 0, hz = 0, lastTick = 0, outSteer = 0;
 
 // ---------- RPM lights ----------
 const N = 16, rpmEl = $('#rpm'), segs = [];
@@ -199,8 +201,14 @@ function pulse(now) {
 }
 
 // ---------- network ----------
-function send() {
-  if (!ws || ws.readyState !== 1 || ws.bufferedAmount > 2048) return;
+function send(force) {
+  if (!ws || ws.readyState !== 1) return;
+  if (!force) {
+    const now = performance.now();
+    if (now - lastSend < 8 || ws.bufferedAmount > 256) { dirty = true; return; }   // max ~120 packets/s; if the link is backed up, wait and send only the newest state
+    lastSend = now;
+  }
+  dirty = false;
   ws.send(`[${st.steer.toFixed(4)},${st.thr.toFixed(3)},${st.brk.toFixed(3)},${st.btn}]`);
 }
 function sendCfg() {
@@ -233,8 +241,8 @@ function onMsg(ev) {
   hz = m.live ? (m.hz || 0) : 0;
   if (m.ev && m.ev.includes('shift')) tick();
   if (!m.live) { $('#spd').textContent = '0'; $('#gear').textContent = 'N'; segs.forEach(s => s.classList.remove('on')); return; }
-  $('#spd').textContent = Math.round(m.v);
-  $('#gear').textContent = m.g;
+  txt('#spd', Math.round(m.v));
+  txt('#gear', m.g);
   const n = Math.round(clamp(m.rpm / m.mx, 0, 1) * N);
   segs.forEach((s, i) => s.classList.toggle('on', i < n));
   rpmEl.classList.toggle('lim', !!m.lim);
@@ -242,8 +250,8 @@ function onMsg(ev) {
   $('#ftc').classList.toggle('on', !!m.tc);
   $('#flim').classList.toggle('on', !!m.lim);
   $('#fpit').classList.toggle('on', !!m.pit);
-  $('#lt').textContent = fmt(m.lt); $('#ll').textContent = fmt(m.ll); $('#bl').textContent = fmt(m.bl);
-  $('#lat').textContent = Math.abs(m.gl).toFixed(1) + ' g';
+  txt('#lt', fmt(m.lt)); txt('#ll', fmt(m.ll)); txt('#bl', fmt(m.bl));
+  txt('#lat', Math.abs(m.gl).toFixed(1) + ' g');
 }
 
 // ---------- steering (tilt) ----------
@@ -259,6 +267,7 @@ function oneEuro(x, t) {
 }
 let lastSrc = '', fusedAt = 0;
 function applyAngle(src) {
+  lastSample = performance.now();
   if (src !== lastSrc) { lastSrc = src; center = null; oe.x = null; }   // the two sensors differ by a fixed offset: re-centre on a switch
   if (center === null) center = raw;
   let d = ((raw - center + 540) % 360) - 180;
@@ -270,17 +279,19 @@ function applyAngle(src) {
 // Apple's fused orientation (gyro + accelerometer, hand-shake removed). The roll of the screen
 // is rebuilt from the rotation matrix, so it has no gimbal lock when the phone is held upright.
 function onOrient(e) {
-  if (!cfg.fused || e.beta == null || e.gamma == null) return;
+  if (!cfg.fused || useAccel || e.beta == null || e.gamma == null) return;
   const b = e.beta * Math.PI / 180, g = e.gamma * Math.PI / 180;
   const ux = -Math.cos(b) * Math.sin(g), uy = Math.sin(b);   // "up" direction in the phone's own axes
-  if (Math.hypot(ux, uy) < .3) return;                       // phone nearly flat: roll is undefined
+  if (Math.hypot(ux, uy) < .15) return;                       // phone nearly flat: roll is undefined
   fusedAt = performance.now();
   raw = Math.atan2(ux, uy) * 180 / Math.PI;
   applyAngle('fused');
 }
+// If fused orientation never shows up at all, fall back to the accelerometer once and stay there
+function checkFused() { setTimeout(() => { if (cfg.fused && !fusedAt) { useAccel = true; center = null; oe.x = null; } }, 1500); }
 // Plain accelerometer: used when fused orientation is off or isn't arriving
 function onMotion(e) {
-  if (cfg.fused && performance.now() - fusedAt < 250) return;
+  if (cfg.fused && !useAccel) return;
   const g = e.accelerationIncludingGravity;
   if (!g || g.x == null || g.y == null) return;
   let mag = Math.hypot(g.x, g.y, g.z || 0);
@@ -304,10 +315,10 @@ function pedal(el, key) {
     st[key] = v; el.style.setProperty('--v', v.toFixed(3));
     send(); pulse(performance.now());
   };
-  el.addEventListener('pointerdown', e => { if (pid !== null) return; e.preventDefault(); pid = e.pointerId; el.setPointerCapture(pid); set(e); });
+  el.addEventListener('pointerdown', e => { e.preventDefault(); pid = e.pointerId; el.setPointerCapture(pid); set(e); });
   el.addEventListener('pointermove', e => { if (e.pointerId === pid) set(e); });
-  const end = e => { if (e.pointerId !== pid) return; pid = null; st[key] = 0; el.style.setProperty('--v', 0); send(); };
-  el.addEventListener('pointerup', end); el.addEventListener('pointercancel', end);
+  const end = e => { if (e.pointerId !== pid) return; pid = null; st[key] = 0; el.style.setProperty('--v', 0); send(true); };
+  el.addEventListener('pointerup', end); el.addEventListener('pointercancel', end); el.addEventListener('lostpointercapture', end);
 }
 pedal($('#brk'), 'brk'); pedal($('#thr'), 'thr');
 
@@ -316,9 +327,9 @@ document.querySelectorAll('[data-bit]').forEach(b => {
   const n = +b.dataset.bit, bit = 1 << n;
   b.addEventListener('pointerdown', e => {
     e.preventDefault(); b.setPointerCapture(e.pointerId);
-    st.btn |= bit; b.classList.add('on'); if (n < 2) tick(); send();
+    st.btn |= bit; b.classList.add('on'); if (n < 2) tick(); send(true);
   });
-  const up = () => { b.classList.remove('on'); setTimeout(() => { st.btn &= ~bit; send(); }, 50); };  // hold 50 ms so AC never misses a tap
+  const up = () => { b.classList.remove('on'); setTimeout(() => { st.btn &= ~bit; send(true); }, 50); };  // hold 50 ms so AC never misses a tap
   b.addEventListener('pointerup', up); b.addEventListener('pointercancel', up);
 });
 $('#cal').addEventListener('click', () => { center = raw; oe.x = null; });
@@ -341,7 +352,7 @@ const paintToggles = () => {
 };
 $('#tInvert').onclick = () => { cfg.invert = !cfg.invert; saveCfg(); paintToggles(); };
 $('#tFlip').onclick = () => { cfg.flip = !cfg.flip; saveCfg(); paintToggles(); layout(); };
-$('#tFused').onclick = () => { cfg.fused = !cfg.fused; saveCfg(); paintToggles(); };
+$('#tFused').onclick = () => { cfg.fused = !cfg.fused; useAccel = false; fusedAt = 0; center = null; oe.x = null; saveCfg(); paintToggles(); checkFused(); };
 $('#tHaptics').onclick = () => { cfg.haptics = !cfg.haptics; saveCfg(); paintToggles(); tick(); };
 $('#gear-btn').onclick = () => $('#settings').classList.remove('hide');
 $('#close').onclick = () => $('#settings').classList.add('hide');
@@ -360,6 +371,7 @@ $('#go').onclick = async () => {
     }
     addEventListener('devicemotion', onMotion);
     addEventListener('deviceorientation', onOrient);
+    checkFused();
     try { await navigator.wakeLock.request('screen'); } catch (e) {}
     tick();                                   // a tap is a user gesture: also warms up the haptic engine
     connect();
@@ -367,12 +379,21 @@ $('#go').onclick = async () => {
   } catch (e) { $('#err').textContent = e.message; }
 };
 document.addEventListener('visibilitychange', async () => {
-  if (!document.hidden) { try { await navigator.wakeLock.request('screen'); } catch (e) {} }
+  if (document.hidden) releaseAll(); else { try { await navigator.wakeLock.request('screen'); } catch (e) {} }
 });
 ['gesturestart', 'gesturechange', 'gestureend', 'contextmenu', 'dblclick'].forEach(t => addEventListener(t, e => e.preventDefault()));
 document.addEventListener('touchmove', e => { if (e.scale && e.scale !== 1) e.preventDefault(); }, {passive: false});   // pinch
 let lastEnd = 0;
 document.addEventListener('touchend', e => { const n = Date.now(); if (n - lastEnd < 350) e.preventDefault(); lastEnd = n; }, {passive: false});   // double-tap
+
+// if the page loses focus (notification, Control Center, app switch) fingers vanish without a release event
+function releaseAll() {
+  st.thr = st.brk = 0; st.btn = 0;
+  $('#thr').style.setProperty('--v', 0); $('#brk').style.setProperty('--v', 0);
+  document.querySelectorAll('[data-bit].on').forEach(b => b.classList.remove('on'));
+  send(true);
+}
+addEventListener('pagehide', releaseAll); addEventListener('blur', releaseAll);
 
 // ---------- layout: always landscape, whatever iOS does ----------
 // Turning the phone like a wheel makes iOS flip the page to portrait. Instead of fighting it,
@@ -388,7 +409,7 @@ function layout() {
     uiRot = cfg.flip ? -lastLandscape : lastLandscape;
     css = `width:${h}px;height:${w}px;left:50%;top:50%;transform:translate(-50%,-50%) rotate(${uiRot}deg)`;
   } else uiRot = 0;
-  if (css !== lastCss) { lastCss = css; stage.style.cssText = css; stage.classList.toggle('rot', w < h); }
+  if (css !== lastCss) { lastCss = css; half = 0; stage.style.cssText = css; stage.classList.toggle('rot', w < h); }
 }
 ['resize', 'orientationchange'].forEach(t => addEventListener(t, layout));
 setInterval(layout, 500); layout();
@@ -401,14 +422,19 @@ setInterval(() => {
     $('#link').classList.remove('on'); $('#rtt').textContent = 'reconnecting'; hz = 0; lastPong = 0; connect();
   }
 }, 1000);
-setInterval(send, 50);                       // keep-alive: the receiver zeroes the pad if this stops
+setInterval(() => { if (lastSample && performance.now() - lastSample > 500) st.steer = 0; send(); }, 50);                       // keep-alive: the receiver zeroes the pad if this stops
 setInterval(() => { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ping: performance.now()})); }, 1000);
+const measure = () => { half = $('#bar').clientWidth / 2; };
+addEventListener('resize', () => { half = 0; });
 (function frame(now) {
   requestAnimationFrame(frame);
   pulse(now);
-  const o = clamp(outSteer, -1, 1);
-  const f = $('#sf'); f.style.left = (o < 0 ? 50 + o * 50 : 50) + '%'; f.style.width = Math.abs(o) * 50 + '%';
-  $('#sr').style.left = (50 + st.steer * 50) + '%';
+  if (dirty) send();
+  if (!half) measure();
+  dOut += (clamp(outSteer, -1, 1) - dOut) * .4;      // glide between the 30 Hz telemetry updates
+  dIn += (st.steer - dIn) * .6;
+  $('#sf').style.transform = `scaleX(${dOut.toFixed(3)})`;
+  $('#sr').style.transform = `translateX(${(dIn * half).toFixed(1)}px)`;
 })(0);
 })();
 </script>
